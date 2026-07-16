@@ -258,7 +258,7 @@ impl Plugin for BigSpaceStationaryPlugin {
 
         // mark_dirty_subtrees intentionally does NOT use Commands, so Bevy won't insert an
         // apply_deferred sync point before propagation. This allows the spatial hashing
-        // chain (CellLookup → PartitionLookup → PartitionEntities) to run in parallel with
+        // chain (CellLookup -> PartitionLookup -> PartitionEntities) to run in parallel with
         // high-precision propagation.
         #[cfg(feature = "std")]
         let dirty_config = || {
@@ -341,14 +341,14 @@ mod tests {
             .id();
 
         // Next update without sleeping: FixedUpdate may not tick (near-zero delta).
-        // is_added() is true regardless → no init.
+        // is_added() is true regardless -> no init.
         app.update();
         assert!(
             app.world().get::<StationaryInitialized>(entity).is_none(),
             "StationaryInitialized should not be inserted (is_added still true)"
         );
 
-        // Sleep so FixedUpdate ticks. is_added() is now false → both gates are satisfied.
+        // Sleep so FixedUpdate ticks. is_added() is now false -> both gates are satisfied.
         thread::sleep(core::time::Duration::from_millis(20));
         app.update();
         assert!(
@@ -377,7 +377,7 @@ mod tests {
         // FixedUpdate ticks, and the "Frame 1: should not init" assertion flakes.
         app.world_mut().resource_mut::<Time<Virtual>>().pause();
 
-        // Spawn BEFORE any update — this is the first-frame scenario.
+        // Spawn BEFORE any update - this is the first-frame scenario.
         let entity = app
             .world_mut()
             .spawn((
@@ -388,14 +388,14 @@ mod tests {
             .set_parent_in_place(grid_entity)
             .id();
 
-        // Frame 0: is_added() true → no init.
+        // Frame 0: is_added() true, so no init.
         app.update();
         assert!(
             app.world().get::<StationaryInitialized>(entity).is_none(),
             "Frame 0: should not init (is_added)"
         );
 
-        // Frame 1: is_added() is now false, but FixedUpdateRan is false → gated.
+        // Frame 1: is_added() is now false, but FixedUpdateRan is false, so still gated.
         app.update();
         assert!(
             app.world().get::<StationaryInitialized>(entity).is_none(),
@@ -983,7 +983,7 @@ mod tests {
             .x = 5;
 
         // This frame should: remove StationaryInitialized (via Stationary on_remove hook),
-        // then CellId::update detects Changed<CellCoord> + Without<Stationary> → updates CellId.
+        // then CellId::update detects Changed<CellCoord> + Without<Stationary> -> updates CellId.
         app.update();
 
         // Verify StationaryInitialized was removed

@@ -18,6 +18,7 @@ use bevy_reflect::prelude::*;
 use bevy_time::prelude::*;
 use bevy_transform::{prelude::*, TransformSystems};
 use core::marker::PhantomData;
+use smallvec::SmallVec;
 
 /// Runs the [`big_space`](crate) [`BigSpaceCameraController`].
 ///
@@ -262,7 +263,6 @@ pub fn default_camera_inputs(
 pub fn nearest_objects_in_grid<F: SpatialHashFilter>(
     objects: Query<(
         Entity,
-        &Transform,
         &GlobalTransform,
         &Aabb,
         Option<&RenderLayers>,
@@ -276,6 +276,7 @@ pub fn nearest_objects_in_grid<F: SpatialHashFilter>(
         Option<&RenderLayers>,
     )>,
     children: Query<&Children>,
+    spatial: Query<(), With<CellCoord>>,
     grids: Query<&Grid>,
     partitions: Option<Res<PartitionLookup<F>>>,
     cell_lookup: Option<Res<CellLookup<F>>>,
@@ -286,24 +287,25 @@ pub fn nearest_objects_in_grid<F: SpatialHashFilter>(
     if !camera.slow_near_objects {
         return;
     }
-    let require_vis = camera.require_visibility;
-    let cam_layer = cam_layer.to_owned().unwrap_or_default();
-    let cam_children: EntityHashSet = children.iter_descendants(cam_entity).collect();
+    let ctx = NearestCtx {
+        cam_children: children.iter_descendants(cam_entity).collect(),
+        cam_layer: cam_layer.cloned().unwrap_or_default(),
+        cam_pos,
+        require_visibility: camera.require_visibility,
+    };
 
     let nearest_object = match (partitions, cell_lookup) {
         (Some(partitions), Some(cell_lookup)) => nearest_via_partitions(
             &objects,
             &children,
-            &cam_children,
-            cam_layer,
-            cam_pos,
+            &spatial,
+            &ctx,
             cam_cell,
             &grids,
             &partitions,
             &cell_lookup,
-            require_vis,
         ),
-        _ => nearest_brute_force(&objects, &cam_children, cam_layer, cam_pos, require_vis),
+        _ => nearest_brute_force(&objects, &ctx),
     };
 
     // Only update when we found something. When nothing is visible (e.g., all
@@ -314,39 +316,60 @@ pub fn nearest_objects_in_grid<F: SpatialHashFilter>(
     }
 }
 
+/// Camera-side inputs to the nearest-object search, shared by the brute-force and
+/// partition-accelerated paths so both apply identical candidate filtering.
+struct NearestCtx<'a> {
+    /// Descendants of the camera entity, excluded so the camera never slows near itself.
+    cam_children: EntityHashSet,
+    cam_layer: RenderLayers,
+    cam_pos: &'a GlobalTransform,
+    require_visibility: bool,
+}
+
+/// Distance from the camera to `entity`'s AABB surface, or `None` if the entity is not a valid
+/// candidate: it is a descendant of the camera, on a non-intersecting render layer, hidden while
+/// visibility is required, or at a non-finite distance.
+fn candidate_distance(
+    ctx: &NearestCtx,
+    entity: Entity,
+    obj_pos: &GlobalTransform,
+    aabb: &Aabb,
+    obj_layer: Option<&RenderLayers>,
+    visibility: Option<&InheritedVisibility>,
+) -> Option<f64> {
+    if ctx.cam_children.contains(&entity)
+        || !ctx.cam_layer.intersects(obj_layer.unwrap_or_default())
+        || (ctx.require_visibility && !visibility.is_some_and(|v| v.get()))
+    {
+        return None;
+    }
+    let distance = entity_nearest_distance(ctx.cam_pos, obj_pos, aabb);
+    distance.is_finite().then_some(distance)
+}
+
 /// Brute-force parallel scan over all entities.
 fn nearest_brute_force(
     objects: &Query<(
         Entity,
-        &Transform,
         &GlobalTransform,
         &Aabb,
         Option<&RenderLayers>,
         Option<&InheritedVisibility>,
     )>,
-    cam_children: &EntityHashSet,
-    cam_layer: &RenderLayers,
-    cam_pos: &GlobalTransform,
-    require_visibility: bool,
+    ctx: &NearestCtx,
 ) -> Option<(Entity, f64)> {
     let mut queue = PortableParallel::<Option<(Entity, f64)>>::default();
 
     objects.par_iter().for_each_init(
         || queue.borrow_local_mut(),
-        |local_queue, (entity, object_local, obj_pos, aabb, obj_layer, visibility)| {
-            let obj_layer = obj_layer.unwrap_or_default();
-            if cam_children.contains(&entity)
-                || !cam_layer.intersects(obj_layer)
-                || (require_visibility && !visibility.is_some_and(|v| v.get()))
-            {
+        |local_queue, (entity, obj_pos, aabb, obj_layer, visibility)| {
+            let Some(distance) =
+                candidate_distance(ctx, entity, obj_pos, aabb, obj_layer, visibility)
+            else {
                 return;
-            }
-            let nearest_distance = entity_nearest_distance(cam_pos, obj_pos, object_local, aabb);
-            if !nearest_distance.is_finite() {
-                return;
-            }
-            if nearest_distance < local_queue.map(|d| d.1).unwrap_or(f64::INFINITY) {
-                **local_queue = Some((entity, nearest_distance));
+            };
+            if local_queue.is_none_or(|d| distance < d.1) {
+                **local_queue = Some((entity, distance));
             }
         },
     );
@@ -359,29 +382,30 @@ fn nearest_brute_force(
 /// Partition-accelerated nearest object search.
 ///
 /// 1. O(partitions): find the partition whose cell AABB is nearest to the camera.
-/// 2. O(entities in partition): check entities within that partition (and any of their
-///    descendants that carry an `Aabb`, so meshes loaded as scene descendants of a
-///    `CellCoord` root are still visible to the search), then use the best distance as a
-///    bound to skip all other partitions whose AABB is farther.
+/// 2. O(entities in partition): check entities within that partition, then use the best
+///    distance as a bound to skip all other partitions whose AABB is farther.
+///
+/// Each cell entry entity is searched together with its descendants, so meshes loaded as
+/// scene descendants of a `CellCoord` root (typical for GLTF via `WorldAssetRoot`) are found.
+/// The descendant walk prunes any nested `CellCoord` subtree, because such an entity is a
+/// distinct spatial object visited through its own cell entry; this both bounds the walk to a
+/// single object's hierarchy and avoids considering the same entity twice.
 #[allow(clippy::too_many_arguments)]
 fn nearest_via_partitions<F: SpatialHashFilter>(
     objects: &Query<(
         Entity,
-        &Transform,
         &GlobalTransform,
         &Aabb,
         Option<&RenderLayers>,
         Option<&InheritedVisibility>,
     )>,
     children: &Query<&Children>,
-    cam_children: &EntityHashSet,
-    cam_layer: &RenderLayers,
-    cam_pos: &GlobalTransform,
+    spatial: &Query<(), With<CellCoord>>,
+    ctx: &NearestCtx,
     cam_cell: &CellCoord,
     grids: &Query<&Grid>,
     partitions: &PartitionLookup<F>,
     cell_lookup: &CellLookup<F>,
-    require_visibility: bool,
 ) -> Option<(Entity, f64)> {
     // Bail early if no entities match the query (e.g., all have had visibility components
     // stripped by a render culling system), avoiding an exhaustive partition scan.
@@ -440,45 +464,36 @@ fn nearest_via_partitions<F: SpatialHashFilter>(
             break;
         }
 
-        // Check each partition entity, falling back to its descendants only if the entity
-        // itself has no `Aabb`. Scenes loaded under a `CellCoord` root (typical for GLTF via
-        // `WorldAssetRoot`) put the mesh on a descendant; the descendant walk stops at the
-        // first `Aabb` it finds, which under the "objects fit in a cell" invariant is a
-        // valid proxy for the whole object.
         let best_before = best;
-        let mut check = |entity: Entity| {
-            let Ok((_, object_local, obj_pos, aabb, obj_layer, visibility)) = objects.get(entity)
-            else {
+        let mut consider = |entity: Entity| {
+            let Ok((_, obj_pos, aabb, obj_layer, visibility)) = objects.get(entity) else {
                 return;
             };
-            let obj_layer = obj_layer.unwrap_or_default();
-            if cam_children.contains(&entity)
-                || !cam_layer.intersects(obj_layer)
-                || (require_visibility && !visibility.is_some_and(|v| v.get()))
+            if let Some(distance) =
+                candidate_distance(ctx, entity, obj_pos, aabb, obj_layer, visibility)
             {
-                return;
-            }
-            let nearest_distance = entity_nearest_distance(cam_pos, obj_pos, object_local, aabb);
-            if !nearest_distance.is_finite() {
-                return;
-            }
-            if nearest_distance < best.map(|d| d.1).unwrap_or(f64::INFINITY) {
-                best = Some((entity, nearest_distance));
+                if best.is_none_or(|(_, d)| distance < d) {
+                    best = Some((entity, distance));
+                }
             }
         };
         for cell_id in partition.iter() {
             let Some(entry) = cell_lookup.get(cell_id) else {
                 continue;
             };
-            for entity in entry.entities.iter() {
-                if objects.contains(*entity) {
-                    check(*entity);
-                } else {
-                    for descendant in children.iter_descendants(*entity) {
-                        if objects.contains(descendant) {
-                            check(descendant);
-                            break;
-                        }
+            for &root in entry.entities.iter() {
+                // Depth-first walk of this cell entry and its descendants, pruning at nested
+                // `CellCoord` boundaries. Considers every `Aabb`-bearing node so multi-mesh
+                // scenes are not reduced to one arbitrary mesh.
+                let mut stack: SmallVec<[Entity; 16]> = SmallVec::new();
+                stack.push(root);
+                while let Some(node) = stack.pop() {
+                    if node != root && spatial.contains(node) {
+                        continue;
+                    }
+                    consider(node);
+                    if let Ok(kids) = children.get(node) {
+                        stack.extend(kids.iter());
                     }
                 }
             }
@@ -492,15 +507,17 @@ fn nearest_via_partitions<F: SpatialHashFilter>(
 }
 
 /// Compute the nearest distance from the camera to an entity's AABB surface.
+///
+/// Uses the world scale from `obj_pos` rather than a local `Transform`, so an entity scaled by
+/// its ancestors (e.g. a mesh nested under a scaled `WorldAssetRoot`) reports the correct size.
 fn entity_nearest_distance(
     cam_pos: &GlobalTransform,
     obj_pos: &GlobalTransform,
-    object_local: &Transform,
     aabb: &Aabb,
 ) -> f64 {
     let center_distance = obj_pos.translation().as_dvec3() - cam_pos.translation().as_dvec3();
     center_distance.length()
-        - (aabb.half_extents.as_dvec3() * object_local.scale.as_dvec3())
+        - (aabb.half_extents.as_dvec3() * obj_pos.scale().as_dvec3())
             .abs()
             .min_element()
 }
