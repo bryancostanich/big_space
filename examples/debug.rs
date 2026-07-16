@@ -9,6 +9,8 @@ fn main() {
         .add_plugins((
             DefaultPlugins.build().disable::<TransformPlugin>(),
             BigSpaceDefaultPlugins,
+            CellHashingPlugin::default(),
+            PartitionPlugin::default(),
         ))
         .add_systems(Startup, setup)
         .add_systems(Update, (movement, rotation))
