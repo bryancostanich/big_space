@@ -18,7 +18,8 @@ use core::marker::PhantomData;
 ///
 /// Requires [`CellHashingPlugin::<F>`] and [`PartitionPlugin::<F>`] to be installed alongside;
 /// those are not added here because spatial hashing has runtime cost that should stay an
-/// explicit opt-in. A warning is logged at startup if either is missing.
+/// explicit opt-in. For the common unfiltered case, add
+/// [`BigSpaceDebugPlugins`], which bundles all three.
 pub struct BigSpaceDebugPlugin<F: SpatialHashFilter = ()>(PhantomData<F>);
 
 impl Default for BigSpaceDebugPlugin<()> {

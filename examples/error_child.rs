@@ -7,8 +7,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins.build().disable::<TransformPlugin>(),
             BigSpaceDefaultPlugins,
-            CellHashingPlugin::default(),
-            PartitionPlugin::default(),
+            BigSpaceDebugPlugins::default(),
         ))
         .add_systems(Startup, setup_scene)
         .run();

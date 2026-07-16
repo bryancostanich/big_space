@@ -13,8 +13,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins.build().disable::<TransformPlugin>(),
             BigSpaceDefaultPlugins,
-            CellHashingPlugin::default(),
-            PartitionPlugin::default(),
+            BigSpaceDebugPlugins::default(),
         ))
         .insert_resource(ClearColor(Color::BLACK))
         .add_systems(Startup, (setup, ui_setup))

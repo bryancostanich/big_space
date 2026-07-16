@@ -13,8 +13,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins.build().disable::<TransformPlugin>(),
             BigSpaceDefaultPlugins,
-            CellHashingPlugin::default(),
-            PartitionPlugin::default(),
+            BigSpaceDebugPlugins::default(),
         ))
         .add_systems(Startup, (setup_scene, setup_ui))
         .add_systems(Update, (rotator_system, toggle_plugin))

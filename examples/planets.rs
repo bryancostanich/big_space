@@ -26,8 +26,7 @@ fn main() {
             BigSpaceDefaultPlugins
                 .build()
                 .enable::<BigSpaceValidationPlugin>(),
-            CellHashingPlugin::default(),
-            PartitionPlugin::default(),
+            BigSpaceDebugPlugins::default(),
         ))
         .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
