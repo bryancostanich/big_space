@@ -2,6 +2,28 @@
 
 ## UNRELEASED
 
+### Updated: Bevy 0.19
+
+Updated to bevy `0.19.0`. Renames: `SceneRoot` -> `WorldAssetRoot`, `font_size: f32` ->
+`FontSize::Px`, `TextLayout::new_with_justify` -> `TextLayout::justify`,
+`shadows_enabled` -> `shadow_maps_enabled`, `Skybox::image` is now optional, `Hdr` moved
+from `bevy::render::view` to `bevy::camera`, `SystemState::get_mut` is fallible.
+
+### Added: `multi_threaded` feature
+
+Bevy no longer implies parallel transform propagation via `std`; it is an explicit
+`multi_threaded` opt-in. `big_space` mirrors this with a `multi_threaded` feature that
+enables the parallel code paths in `bevy_ecs`, `bevy_tasks`, and `bevy_transform`. Apps
+that depend on `bevy` with its `multi_threaded` feature get this automatically through
+feature unification.
+
+### Added: BSN compatibility
+
+`BigSpace` now derives `Clone` and `FloatingOrigin` now derives `Default + Clone + Copy +
+Debug`. This makes both usable in bevy 0.19's `bsn!` scene templates, which is otherwise
+blanket-implemented for `Default + Clone` components. `Grid` and `CellCoord` were already
+compatible.
+
 ### Renamed types for consistency
 
 Redundant `Grid` prefix removed.
