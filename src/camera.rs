@@ -293,6 +293,7 @@ pub fn nearest_objects_in_grid<F: SpatialHashFilter>(
     let nearest_object = match (partitions, cell_lookup) {
         (Some(partitions), Some(cell_lookup)) => nearest_via_partitions(
             &objects,
+            &children,
             &cam_children,
             cam_layer,
             cam_pos,
@@ -358,8 +359,10 @@ fn nearest_brute_force(
 /// Partition-accelerated nearest object search.
 ///
 /// 1. O(partitions): find the partition whose cell AABB is nearest to the camera.
-/// 2. O(entities in partition): check entities within that partition, then use the best
-///    distance as a bound to skip all other partitions whose AABB is farther.
+/// 2. O(entities in partition): check entities within that partition (and any of their
+///    descendants that carry an `Aabb`, so meshes loaded as scene descendants of a
+///    `CellCoord` root are still visible to the search), then use the best distance as a
+///    bound to skip all other partitions whose AABB is farther.
 #[allow(clippy::too_many_arguments)]
 fn nearest_via_partitions<F: SpatialHashFilter>(
     objects: &Query<(
@@ -370,6 +373,7 @@ fn nearest_via_partitions<F: SpatialHashFilter>(
         Option<&RenderLayers>,
         Option<&InheritedVisibility>,
     )>,
+    children: &Query<&Children>,
     cam_children: &EntityHashSet,
     cam_layer: &RenderLayers,
     cam_pos: &GlobalTransform,
@@ -436,32 +440,46 @@ fn nearest_via_partitions<F: SpatialHashFilter>(
             break;
         }
 
-        // Check all entities in this partition's cells.
+        // Check each partition entity, falling back to its descendants only if the entity
+        // itself has no `Aabb`. Scenes loaded under a `CellCoord` root (typical for GLTF via
+        // `WorldAssetRoot`) put the mesh on a descendant; the descendant walk stops at the
+        // first `Aabb` it finds, which under the "objects fit in a cell" invariant is a
+        // valid proxy for the whole object.
         let best_before = best;
+        let mut check = |entity: Entity| {
+            let Ok((_, object_local, obj_pos, aabb, obj_layer, visibility)) = objects.get(entity)
+            else {
+                return;
+            };
+            let obj_layer = obj_layer.unwrap_or_default();
+            if cam_children.contains(&entity)
+                || !cam_layer.intersects(obj_layer)
+                || (require_visibility && !visibility.is_some_and(|v| v.get()))
+            {
+                return;
+            }
+            let nearest_distance = entity_nearest_distance(cam_pos, obj_pos, object_local, aabb);
+            if !nearest_distance.is_finite() {
+                return;
+            }
+            if nearest_distance < best.map(|d| d.1).unwrap_or(f64::INFINITY) {
+                best = Some((entity, nearest_distance));
+            }
+        };
         for cell_id in partition.iter() {
             let Some(entry) = cell_lookup.get(cell_id) else {
                 continue;
             };
             for entity in entry.entities.iter() {
-                let Ok((_, object_local, obj_pos, aabb, obj_layer, visibility)) =
-                    objects.get(*entity)
-                else {
-                    continue;
-                };
-                let obj_layer = obj_layer.unwrap_or_default();
-                if cam_children.contains(entity)
-                    || !cam_layer.intersects(obj_layer)
-                    || (require_visibility && !visibility.is_some_and(|v| v.get()))
-                {
-                    continue;
-                }
-                let nearest_distance =
-                    entity_nearest_distance(cam_pos, obj_pos, object_local, aabb);
-                if !nearest_distance.is_finite() {
-                    continue;
-                }
-                if nearest_distance < best.map(|d| d.1).unwrap_or(f64::INFINITY) {
-                    best = Some((*entity, nearest_distance));
+                if objects.contains(*entity) {
+                    check(*entity);
+                } else {
+                    for descendant in children.iter_descendants(*entity) {
+                        if objects.contains(descendant) {
+                            check(descendant);
+                            break;
+                        }
+                    }
                 }
             }
         }
