@@ -34,7 +34,9 @@ fn render_space_pair(separation_m: f32) -> (Vec3, Vec3) {
         .spawn_big_space(Grid::new(CELL_EDGE_M, 0.0), |grid| {
             let surface_y = MOON_RADIUS_M as f32;
             grid.spawn_spatial((Transform::from_xyz(0.0, surface_y, 0.0), FloatingOrigin));
-            a = grid.spawn_spatial(Transform::from_xyz(0.0, surface_y, 0.0)).id();
+            a = grid
+                .spawn_spatial(Transform::from_xyz(0.0, surface_y, 0.0))
+                .id();
             b = grid
                 .spawn_spatial(Transform::from_xyz(separation_m, surface_y, 0.0))
                 .id();
